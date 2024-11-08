@@ -6,6 +6,8 @@ Get started with HazardFlow by reading [User Guide](https://kaist-cp.github.io/h
 
 HazardFlow's design is based on the paper ["Modular Hardware Design of Pipelined Circuits with Hazards"](https://dl.acm.org/doi/10.1145/3656378).
 
+This is the repositories I use for doing homework. The upstream repo is [kaist-cp/hazardflow](https://github.com/kaist-cp/hazardflow)
+
 # Ignore
 
 869e17681673486f656798ae547e1271
