@@ -54,7 +54,7 @@ impl SatCounter {
 pub struct Bht {
     /// BHT entries.
     #[allow(unused)]
-    entries: Array<SatCounter, BHT_ENTRIES>,
+    pub entries: Array<SatCounter, BHT_ENTRIES>,
 }
 
 impl Bht {
@@ -62,13 +62,26 @@ impl Bht {
     ///
     /// Returns `true` if the branch is prediction as taken; otherwise, returns `false`.
     pub fn predict(self, _pc: u32) -> bool {
-        todo!("assignment 2")
+        let index = (_pc as usize) % BHT_ENTRIES;
+        let counter = self.entries[index];
+        counter.predict()
     }
 
     /// Returns the updated BHT when a branch instruction resolves at the execute stage with the given PC.
     ///
     /// It updates the entry corresponding to the given PC.
     pub fn update(self, _pc: u32, _taken: bool) -> Self {
-        todo!("assignment 2")
+        let index = (_pc as usize) % BHT_ENTRIES;
+        let counter = self.entries[index];
+
+        let new_counter = if _taken {
+            counter.increment()
+        } else {
+            counter.decrement()
+        };
+        
+        Bht{    
+            entries: self.entries.set(index, new_counter),
+        }
     }
 }

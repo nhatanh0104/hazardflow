@@ -30,6 +30,9 @@ pub struct DecEP {
 
     /// Instruction (for debugging purpose).
     pub debug_inst: u32,
+
+    /// Branch prediction result.
+    pub bp_result: BpResult,
 }
 
 /// Hazard from decode stage to fetch stage.
@@ -37,12 +40,18 @@ pub struct DecEP {
 pub struct DecR {
     /// Indicates that the pipeline should be redirected.
     pub redirect: HOption<u32>,
+    
+    /// Branch predictor update signal.
+    pub bp_update: HOption<BpUpdate>,
 }
 
 impl DecR {
     /// Creates a new decode resolver.
     pub fn new(exer: ExeR) -> Self {
-        Self { redirect: exer.redirect }
+        Self { 
+            redirect: exer.redirect,
+            bp_update: exer.bp_update,
+        }
     }
 }
 
@@ -117,6 +126,7 @@ fn gen_payload(ip: FetEP, inst: Instruction, er: ExeR) -> HOption<DecEP> {
         is_illegal: inst.is_illegal,
         pc: ip.imem_resp.addr,
         debug_inst: ip.imem_resp.data,
+        bp_result: ip.bp_result,
     })
 }
 

@@ -51,6 +51,9 @@ pub struct ExeR {
 
     /// Register file.
     pub rf: Regfile,
+
+    /// Branch predictor update signal.
+    pub bp_update: HOption<BpUpdate>
 }
 
 impl ExeR {
@@ -60,6 +63,7 @@ impl ExeR {
         bypass: HOption<Register>,
         stall: HOption<U<{ clog2(REGS) }>>,
         redirect: HOption<u32>,
+        bp_update: HOption<BpUpdate>,
     ) -> Self {
         Self {
             bypass_from_exe: bypass,
@@ -68,33 +72,91 @@ impl ExeR {
             stall,
             redirect: memr.redirect.or(redirect),
             rf: memr.rf,
+            bp_update: bp_update,
         }
     }
 }
 
 /// Returns redirected PC based on the given payload.
-fn get_redirect(p: DecEP, alu_out: u32) -> HOption<u32> {
+fn get_redirect(p: DecEP, alu_out: u32) -> (HOption<u32>, HOption<BpUpdate>) {
     let Some(br_info) = p.br_info else {
-        return None;
+        return (None, None);
     };
 
     let target = br_info.base + br_info.offset;
     let alu_true = alu_out != 0;
 
     match br_info.typ {
-        BrType::Jal | BrType::Jalr => Some(target),
+        // Instruction is JAL
+        BrType::Jal => (None, None),
+
+        // Instruction is JALR
+        BrType::Jalr => {
+            // Prediction is true
+            if target == p.bp_result.btb {
+                (None, None)
+            }
+            // Mispredicted 
+            else {
+                let bp_update = BpUpdate::Btb { pc: p.pc, target };
+                (Some(target), Some(bp_update))
+            }
+        },
+
+        // Instruction is Branch if (greater than or) equal
         BrType::Beq | BrType::Bge | BrType::Bgeu => {
+            // Branch resolved as taken
             if !alu_true {
-                Some(target)
-            } else {
-                None
+                let bp_update = BpUpdate::Bht { pc: p.pc, taken: true };
+                // Predicted as taken
+                if p.bp_result.bht {
+                    (None, Some(bp_update))
+                }
+                // Predicted as not taken -> mispredicted -> redirect to target
+                else {
+                    (Some(target), Some(bp_update))
+                }
+            } 
+
+            // Branch resolve as not taken
+            else {                        
+                let bp_update = BpUpdate::Bht { pc: p.pc, taken: false };
+                // Predicted as taken -> mispredicted -> redirected to current PC + 4
+                if p.bp_result.bht {
+                    (Some(p.pc + 4), Some(bp_update))
+                }
+                // Predicted as not taken 
+                else {
+                    (None, Some(bp_update))
+                }
             }
         }
+
+        // Instruction is Branch if less than
         BrType::Bne | BrType::Blt | BrType::Bltu => {
+            // Branch resolved as taken
             if alu_true {
-                Some(target)
-            } else {
-                None
+                let bp_update = BpUpdate::Bht { pc: p.pc, taken: true };
+                // Predicted as taken
+                if p.bp_result.bht {
+                    (None, Some(bp_update))
+                }
+                // Predicted as not taken -> mispredicted -> redirect to target
+                else { 
+                    (Some(target), Some(bp_update))
+                }
+
+            // Branch resolved as not taken
+            } else {                        
+                let bp_update = BpUpdate::Bht { pc: p.pc, taken: false };
+                // Predicted as taken -> mispredicted -> redirect to current PC + 4
+                if p.bp_result.bht {
+                    (Some(p.pc + 4), Some(bp_update))
+                } 
+                // Predicted as not taken
+                else {
+                    (None, Some(bp_update))
+                }
             }
         }
     }
@@ -109,7 +171,7 @@ fn gen_resolver(er: (HOption<(DecEP, u32)>, MemR)) -> ExeR {
     });
 
     let Some((p, alu_out)) = p else {
-        return ExeR::new(memr, None, stall, None);
+        return ExeR::new(memr, None, stall, None, None);
     };
 
     let bypass =
@@ -117,9 +179,9 @@ fn gen_resolver(er: (HOption<(DecEP, u32)>, MemR)) -> ExeR {
             |(addr, wb_sel)| if matches!(wb_sel, WbSel::Alu) { Some(Register::new(addr, alu_out)) } else { None },
         );
 
-    let redirect = get_redirect(p, alu_out);
+    let (redirect, bp_update) = get_redirect(p, alu_out);
 
-    ExeR::new(memr, bypass, stall, redirect)
+    ExeR::new(memr, bypass, stall, redirect, bp_update)
 }
 
 /// Generates payload from execute stage to memory stage.
