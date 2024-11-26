@@ -201,14 +201,71 @@ fn gen_payload(ip: DecEP, alu_out: u32, memr: MemR) -> HOption<ExeEP> {
     }
 }
 
-/// Execute stage.
-pub fn exe(i: I<VrH<DecEP, ExeR>, { Dep::Demanding }>) -> I<VrH<ExeEP, MemR>, { Dep::Demanding }> {
-    i.map_resolver_inner::<(HOption<(DecEP, u32)>, MemR)>(gen_resolver)
+/// inner Execute stage.
+fn inner_exe(
+    i : I<VrH<DecEP, (HOption<(DecEP, u32)>, MemR)>, {Dep::Demanding}>,
+) ->  I<VrH<(DecEP, u32), MemR>, { Dep::Demanding }> {
+    let deep = i
         .reg_fwd(true)
+        .map_resolver_inner(|er: ((HOption<(DecEP, u32)>, MemR), (HOption<(DecEP, u32)>, MemR))| {
+            let (alu_r, mext_r) = er;
+            if alu_r.0.is_some() {
+                alu_r
+            } else {
+                mext_r
+            }
+        });
+
+    let (alu_req, mext_req) = deep
+        .map(|p| {
+            let op = p.alu_input.op;
+            let sel = match op {
+                AluOp::Base(_) => 0.into_u(),
+                AluOp::Mext(_) => 1.into_u(),
+            };
+            
+            (p, BoundedU::new(sel))
+        })
+        .branch();
+
+    let alu_resp = alu_req
         .map(|p| match p.alu_input.op {
             AluOp::Base(op) => (p, exe_alu(p.alu_input.op1_data, p.alu_input.op2_data, op)),
             AluOp::Mext(_) => todo!("assignment 3"),
         })
-        .map_resolver_block_with_p::<VrH<(DecEP, u32), MemR>>(|ip, er| (ip, er.inner))
+        .map_resolver_block_with_p::<VrH<(DecEP, u32), MemR>>(|ip, er| (ip, er.inner));
+
+    let mext_resp = mext_req
+        .map(|p| match p.alu_input.op {
+            AluOp::Base(_) => todo!("never happen"),
+            AluOp::Mext(op) => {
+                let mul_req = MulReq {
+                    op,
+                    in1: From::from(p.alu_input.op1_data),
+                    in2: From::from(p.alu_input.op2_data),
+                };
+                (p, mul_req)
+            },
+        })
+        .comb(muldiv)
+        .map(|p| (p.0, u32::from(p.1)))
+        .map_resolver_inner::<(HOption<(DecEP, u32)>, MemR)>(|er| {
+            let redirect = er.1.redirect;
+            match redirect {
+                Some(_) => (er, true),
+                None => (er, false),
+            }
+        })
+        .map_resolver_block_with_p::<VrH<(DecEP, u32), MemR>>(|ip, er| (ip, er.inner));
+
+    [alu_resp, mext_resp].merge()
+
+}
+
+
+/// Execute stage.
+pub fn exe(i: I<VrH<DecEP, ExeR>, { Dep::Demanding }>) -> I<VrH<ExeEP, MemR>, { Dep::Demanding }> {
+    i.map_resolver_inner::<(HOption<(DecEP, u32)>, MemR)>(gen_resolver)
+        .comb(exclusive(inner_exe))
         .filter_map_drop_with_r_inner(|(ip, alu_out), er| gen_payload(ip, alu_out, er))
 }

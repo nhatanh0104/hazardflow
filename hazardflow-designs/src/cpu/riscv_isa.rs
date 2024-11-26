@@ -158,6 +158,16 @@ impl From<u32> for Instruction {
         let is_ecall = value == 0b00000000000000000000000001110011;
         let is_ebreak = value == 0b00000000000100000000000001110011;
 
+        /* RV32I MulDiv Instruction */
+        let is_mul = funct7 == 0b0000001 && funct3 == 0b000 && opcode == 0b0110011;
+        let is_mulh = funct7 == 0b0000001 && funct3 == 0b001 && opcode == 0b0110011;
+        let is_mulhsu = funct7 == 0b0000001 && funct3 == 0b010 && opcode == 0b0110011;
+        let is_mulhu = funct7 == 0b0000001 && funct3 == 0b011 && opcode == 0b0110011;
+        let is_div = funct7 == 0b0000001 && funct3 == 0b100 && opcode == 0b0110011;
+        let is_divu = funct7 == 0b0000001 && funct3 == 0b101 && opcode == 0b0110011;
+        let is_rem = funct7 == 0b0000001 && funct3 == 0b110 && opcode == 0b0110011;
+        let is_remu = funct7 == 0b0000001 && funct3 == 0b111 && opcode == 0b0110011;
+
         /* RV32/RV64 Zicsr Standard Extension */
         let is_csrrw = funct3 == 0b001 && opcode == 0b1110011;
         let is_csrrs = funct3 == 0b010 && opcode == 0b1110011;
@@ -173,7 +183,7 @@ impl From<u32> for Instruction {
         let l1 = is_lw || is_lb || is_lbu || is_lh || is_lhu || is_sw || is_sb || is_sh;
         let l2 = is_auipc || is_lui;
         let l3 = is_addi || is_andi || is_ori || is_xori || is_slti || is_sltiu || is_slli || is_srai || is_srli;
-        let l4 = is_sll || is_add || is_sub || is_slt || is_sltu || is_and || is_or || is_xor || is_sra || is_srl;
+        let l4 = is_sll || is_add || is_sub || is_slt || is_sltu || is_and || is_or || is_xor || is_sra || is_srl || is_mul || is_mulh || is_mulhsu || is_mulhu || is_div || is_divu || is_rem || is_remu;
         let l5 = is_jal || is_jalr || is_beq || is_bne || is_bge || is_bgeu || is_blt || is_bltu;
         let l6 = is_csrrwi || is_csrrsi || is_csrrw || is_csrrs || is_csrrc || is_csrrci;
         let l7 = is_ecall || is_mret || is_ebreak || is_wfi;
@@ -249,6 +259,7 @@ impl From<u32> for Instruction {
             U::from(0)
         };
 
+        // Base ALU op
         let alu_op = if is_sll || is_slli {
             AluOp::Base(BaseAluOp::Sll)
         } else if is_add || is_addi || is_jalr {
@@ -285,8 +296,27 @@ impl From<u32> for Instruction {
             AluOp::Base(BaseAluOp::Sltu)
         } else if is_csr || is_csri {
             AluOp::Base(BaseAluOp::CopyOp1)
+        } 
+        
+        // M - extension op
+        else if is_mul {
+            AluOp::Mext(MulOp::Mul)
+        } else if is_mulh {
+            AluOp::Mext(MulOp::Mulh)
+        } else if is_mulhsu {
+            AluOp::Mext(MulOp::Mulhsu)
+        } else if is_mulhu {
+            AluOp::Mext(MulOp::Mulhu)
+        } else if is_div {
+            AluOp::Mext(MulOp::Div)
+        } else if is_divu {
+            AluOp::Mext(MulOp::Divu)
+        } else if is_rem {
+            AluOp::Mext(MulOp::Rem)
+        } else if is_remu { 
+            AluOp::Mext(MulOp::Remu)
         } else {
-            AluOp::Base(BaseAluOp::Zero)
+            AluOp::Base(BaseAluOp::Zero)        // Zero
         };
 
         let wb_sel = if is_rtype {
