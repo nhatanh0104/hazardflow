@@ -2,6 +2,8 @@
 
 #![allow(unused)] // Added for assignment.
 
+use std::process::Output;
+
 use super::*;
 
 /// PE row data signals.
@@ -164,5 +166,61 @@ pub fn pe(
     _in_left: Valid<PeRowData>,
     (_in_top_data, _in_top_control): (Valid<PeColData>, Valid<PeColControl>),
 ) -> (Valid<PeRowData>, (Valid<PeColData>, Valid<PeColControl>)) {
-    todo!("assignment 4")
+    let (in_left, out_right) = _in_left.lfork();
+    let (in_top_control, out_bottom_control) = _in_top_control.lfork();
+
+    // Join the input
+    let data_in = (in_left, _in_top_data, in_top_control).join_valid();
+
+    let data_out = data_in
+        .fsm_map(PeS::new(S::<ACC_BITS>::default(), S::<ACC_BITS>::default(), Propagate::default()), |pe_input, pe_s| {
+            let (in_left, in_top_data, in_top_control) = pe_input;
+            let in_propagate = in_top_control.control.propagate;
+            let in_dataflow = in_top_control.control.dataflow;
+
+            // MAC Unit input selection
+            let mac_activation = in_left.a;
+            let (mac_weight, mac_bias) = match in_dataflow {
+                Dataflow::OS => match in_propagate {
+                    Propagate::Reg1 => (in_top_data.b.resize::<INPUT_BITS>(), pe_s.reg2),
+                    Propagate::Reg2 => (in_top_data.b.resize::<INPUT_BITS>(), pe_s.reg1),
+                },
+                Dataflow::WS => match in_propagate {
+                    Propagate::Reg1 => (pe_s.reg2.resize::<INPUT_BITS>(), in_top_data.b.sext::<ACC_BITS>()),
+                    Propagate::Reg2 => (pe_s.reg1.resize::<INPUT_BITS>(), in_top_data.b.sext::<ACC_BITS>()),
+                },
+            };
+            
+            // MAC output
+            let mac_result = mac(mac_activation, mac_weight, mac_bias);
+
+            // Postprocess
+            let (out_b, out_d) = match in_dataflow {
+                Dataflow::OS => {
+                    let shamt = if pe_s.propagate != in_propagate {
+                        in_top_control.control.shift
+                    } else {
+                        U::<{ clog2(ACC_BITS) }>::from(0)
+                    };
+                    match in_propagate {
+                        Propagate::Reg1 => (in_top_data.b, shift_and_clip(pe_s.reg1, shamt)),
+                        Propagate::Reg2 => (in_top_data.b, shift_and_clip(pe_s.reg2, shamt)),
+                    }
+                },
+                Dataflow::WS => match in_propagate {
+                    Propagate::Reg1 => (mac_result, pe_s.reg1.resize::<OUTPUT_BITS>()),
+                    Propagate::Reg2 => (mac_result, pe_s.reg2.resize::<OUTPUT_BITS>()),
+                },
+
+            };
+
+            let out_bottom_data = PeColData { b: out_b, d: out_d};
+            let next_pe_s = match in_dataflow {
+                Dataflow::OS => PeS::new_os(in_top_data.d, mac_result, in_propagate),
+                Dataflow::WS => PeS::new_ws(in_top_data.d.resize::<INPUT_BITS>(), mac_weight, in_propagate),
+            };
+            (out_bottom_data, next_pe_s)
+        });
+
+    (out_right, (data_out, out_bottom_control))
 }
