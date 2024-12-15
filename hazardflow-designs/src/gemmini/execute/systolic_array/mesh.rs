@@ -15,14 +15,14 @@ pub type MeshColData = [TileColData; MESH_COLS];
 ///
 /// This helper function is used with the `array_map!` macro, as the macro currently does not accept closures as arguments.
 fn reg_fwd_tile_row(i: Valid<PeRowData>) -> Valid<PeRowData> {
-    todo!("assignment 5")
+    i.reg_fwd_always()
 }
 
 /// Applies a 1-cycle delay register to the column-side egress interface of a tile.
 ///
 /// This helper function is used with the `array_map!` macro, as the macro currently does not accept closures as arguments.
 fn reg_fwd_tile_col((i1, i2): (Valid<PeColData>, Valid<PeColControl>)) -> (Valid<PeColData>, Valid<PeColControl>) {
-    todo!("assignment 5")
+    (i1.reg_fwd_always(), i2.reg_fwd_always())
 }
 
 /// A tile with a 1-cycle delay register attached to each egress interface.
@@ -38,7 +38,11 @@ pub fn tile_with_reg(in_left: TileRowData, in_top: TileColData) -> (TileRowData,
 
 /// Mesh.
 pub fn mesh(in_left: MeshRowData, in_top: MeshColData) -> (MeshRowData, MeshColData) {
-    todo!("assignment 5")
+    let arr = from_fn(flip(tile_with_reg));
+    let row = flip(seq(arr));
+    let tile = seq(from_fn(row));
+
+    tile(in_left, in_top)
 }
 
 /// Mesh with default Gemmini configuration (16 x 16 Tiles).
