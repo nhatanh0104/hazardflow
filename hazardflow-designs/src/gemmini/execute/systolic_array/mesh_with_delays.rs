@@ -3,6 +3,9 @@
 #![allow(unused)] // Added for assignment.
 #![allow(warnings)] // Added for assignment.
 
+use std::num::NonZeroIsize;
+use std::ops::Sub;
+
 use super::utils::*;
 use super::*;
 
@@ -118,7 +121,12 @@ impl Config {
     /// - `self`: The current configuration state.
     /// - `propagate_flip`: A boolean indicating whether to toggle the propagate value in processing elements (PEs).
     pub fn update(self, propagate_flip: bool) -> Self {
-        todo!("assignment 6")
+        let new_matmul_id = wrapping_inc(self.matmul_id, U::from(MAX_SIMULTANEOUS_MATMULS));
+        let new_propagate = match self.propagate {
+            Propagate::Reg1 => if propagate_flip { Propagate::Reg2 } else { Propagate::Reg1 },
+            Propagate::Reg2 => if propagate_flip { Propagate::Reg1 } else { Propagate::Reg2 },
+        };
+        Self { matmul_id: new_matmul_id, propagate: new_propagate}
     }
 }
 
@@ -149,21 +157,34 @@ fn fifos(
     let (control_to_tag_fifo, control_to_total_rows_fifo) = control.lfork();
 
     // Section 2.3.8 (1) Filter out flush request.
-    let req: I<VrH<ReqExtended, TagsInProgress>, { Dep::Helpful }> = todo!("assignment 6");
+    let req: I<VrH<ReqExtended, TagsInProgress>, { Dep::Helpful }> = req.filter(|req_ext|{
+        if req_ext.req.flush { false } else { true }
+    });
 
     // Section 2.3.8 (2) Calculate future `matmul_id`.
     let (tag, total_rows) = req
         .map_resolver_inner::<(TagsInProgress, ())>(|(tags, _)| tags)
         .map(|ReqExtended { req, config }| {
-            let tag_id = todo!("assignment 6");
-            let total_rows_id = todo!("assignment 6");
+            let tag_id = match req.dataflow {
+                Dataflow::OS => wrapping_add(config.matmul_id, U::from(2), U::from(MAX_SIMULTANEOUS_MATMULS)),
+                Dataflow::WS => wrapping_inc(config.matmul_id, U::from(MAX_SIMULTANEOUS_MATMULS)),
+            };
+            let total_rows_id = config.matmul_id;
             ((tag_id, req.tag), (total_rows_id, req.total_rows))
         })
         .unzip();
 
     // Section 2.3.8 (3) Convert resolver type and calculate `TagsInProgress`.
-    let tag: I<VrH<(U<ID_BITS>, MeshTag), ((), FifoS<(U<ID_BITS>, MeshTag), FIFO_LENGTH>)>, { Dep::Helpful }> =
-        todo!("Caculate the resolver signal `TagsInProgress` here");
+    let tag: I<VrH<(U<ID_BITS>, MeshTag), ((), FifoS<(U<ID_BITS>, MeshTag), FIFO_LENGTH>)>, { Dep::Helpful }> = tag
+        .map_resolver_inner(|er: ((), FifoS<(Array<bool, 3>, MeshTag), 6>)| {
+            let r = er.1.inner_with_valid().map(|e| {
+                match e {
+                    Some((_, tag)) => tag,
+                    None => MeshTag::default(),
+                }
+            });
+            r
+        });
     let total_rows = total_rows.map_resolver_inner::<((), FifoS<(U<ID_BITS>, U<5>), FIFO_LENGTH>)>(|_| ());
 
     // FIFO
@@ -174,11 +195,14 @@ fn fifos(
     let tag = (tag_fifo, control_to_tag_fifo)
         .join()
         .map_resolver_inner_with_p::<()>(|ip, _| {
-            let pop: bool = todo!("assignment 6");
+            let pop: bool = match ip {
+                Some(((head_id, _), mesh_out_control)) => (head_id == mesh_out_control.id) && mesh_out_control.last,
+                None => false,
+            };
             ((), if pop { 1.into_u() } else { 0.into_u() })
         })
         .filter_map::<MeshTag>(|((head_id, tag), mesh_out_control)| {
-            let transfer: bool = todo!("assignment 6");
+            let transfer: bool = (head_id == mesh_out_control.id);
             if transfer {
                 Some(tag)
             } else {
@@ -188,11 +212,14 @@ fn fifos(
     let total_rows = (total_rows_fifo, control_to_total_rows_fifo)
         .join()
         .map_resolver_inner_with_p::<()>(|ip, _| {
-            let pop: bool = todo!("assignment 6");
+            let pop: bool = match ip {
+                Some(((head_id, _), mesh_out_control)) => (head_id == mesh_out_control.id) && mesh_out_control.last,
+                None => false,
+            };
             ((), if pop { 1.into_u() } else { 0.into_u() })
         })
         .filter_map::<U<{ clog2(BLOCK_SIZE + 1) }>>(|((head_id, total_rows), mesh_out_control)| {
-            let transfer: bool = todo!("assignment 6");
+            let transfer: bool = (head_id == mesh_out_control.id);
             if transfer {
                 Some(total_rows)
             } else {
@@ -219,7 +246,38 @@ fn transpose(data: Valid<(MeshReq, A, B, D)>) -> Valid<(A, B, D)> {
         Valid<(A, BoundedU<2>)>,
         Valid<(B, BoundedU<2>)>,
         Valid<(D, BoundedU<2>)>,
-    ) = todo!("assignment 6");
+    ) = data
+        .map(|(mesh_req, a, b, d)| {
+            let dataflow = mesh_req.dataflow;
+            let trans_a = mesh_req.transpose_a;
+            let trans_bd = mesh_req.transpose_bd;
+            let (sel_a, sel_b, sel_d) = match dataflow {
+                Dataflow::OS => {
+                    if !trans_a && !trans_bd {
+                        (1, 0, 0)
+                    } else if trans_a && !trans_bd {
+                        (0, 0, 0)
+                    } else if trans_a && trans_bd {
+                        (0, 1, 0)
+                    } else {
+                        (0, 0, 0)
+                    }
+                },
+                Dataflow::WS => {
+                    if !trans_a && !trans_bd {
+                        (0, 0, 0)
+                    } else if !trans_a && trans_bd {
+                        (0, 0, 1)
+                    } else if trans_a && !trans_bd {
+                        (1, 0, 0)
+                    } else {
+                        (0, 0, 0)
+                    }
+                }
+            };
+            ((a, BoundedU::new(sel_a.into_u())), (b, BoundedU::new(sel_b.into_u())), (d, BoundedU::new(sel_d.into_u())))
+        })
+        .unzip();
 
     // Section 2.3.5 (2) Branch interface.
     let [a, a_transpose] = a_with_sel.branch();
@@ -232,13 +290,21 @@ fn transpose(data: Valid<(MeshReq, A, B, D)>) -> Valid<(A, B, D)> {
 
     // Section 2.3.5 (3) Select transpose target.
     // NOTE: `Valid<A>` does not mean that `A` should be transposed, actually the types `A`, `B`, and `D` are the same.
-    let (flag, transpose_target): (Valid<TransposeFlag>, Valid<A>) = todo!("assignment 6");
+    let (flag, transpose_target): (Valid<TransposeFlag>, Valid<A>) = [a_transpose, b_transpose, d_transpose].merge().unzip();
 
     let transposed = transpose_target.map(|vec| vec.concat()).comb(transposer_ffi);
 
     // Section 2.3.5 (4) Identify which matrix is transposed among A, B, or D.
     let [a_transposed, b_transposed, d_transposed]: [Valid<A>; 3] =
-        (flag, transposed).join_valid().map(|(flag, arr)| todo!("assignment 6")).branch();
+        (flag, transposed).join_valid().map(|(flag, arr)| {
+            let sel = match flag {
+                TransposeFlag::A => 0,
+                TransposeFlag::B => 1,
+                TransposeFlag::D => 2,
+            };
+            let matrix = arr.chunk();
+            (matrix, BoundedU::new(sel.into_u()))
+        }).branch();
 
     // Section 2.3.5 (5) Select one among `X` and `X_transposed`.
     let a = [a_transposed, a].merge();
@@ -254,7 +320,11 @@ pub fn mesh_with_delays(
     req: I<VrH<MeshReq, TagsInProgress>, { Dep::Helpful }>,
 ) -> Valid<MeshResp> {
     // Section 2.3.1 Update Configurations.
-    let req: I<VrH<ReqExtended, TagsInProgress>, { Dep::Helpful }> = todo!("assignment 6");
+    let req: I<VrH<ReqExtended, TagsInProgress>, { Dep::Helpful }> = req.fsm_map(Config::default(), |mesh_req, config| {
+        let updated_config = config.update(mesh_req.propagate_flip);
+        let req_ext = ReqExtended { req: mesh_req, config: updated_config};
+        (req_ext, updated_config)
+    });
 
     let (mesh_req, fifo_req) = req.map_resolver_inner::<((), TagsInProgress)>(|(_, tags)| tags).lfork();
 
@@ -263,11 +333,22 @@ pub fn mesh_with_delays(
         U::default(),
         true,
         true,
-        |req_ext, counter| todo!("assignment 6"),
+        |req_ext, counter| {
+            let total_rows = req_ext.req.total_rows;
+            let counter_next = wrapping_inc(counter, total_rows);
+            let is_last = counter == U::from(u32::from(total_rows) - 1);
+            ((req_ext, is_last), counter_next, is_last)
+        },
     );
 
     // Section 2.3.3 Branch Request.
-    let [mesh_req_flush, mesh_req_matmul]: [Vr<(ReqExtended, bool)>; 2] = todo!("assignment 6");
+    let [mesh_req_flush, mesh_req_matmul]: [Vr<(ReqExtended, bool)>; 2] = mesh_req
+        .map(|req| {
+            let flush = req.0.req.flush;
+            let sel = if flush { 0.into_u() } else { 1.into_u() };
+            (req, BoundedU::new(sel))
+        })
+        .branch();
 
     // NOTE: Converting to the valid interface is safe as there are no longer any hazards.
     let mesh_req_flush = mesh_req_flush.always_into_valid();
@@ -282,7 +363,7 @@ pub fn mesh_with_delays(
         .unzip();
 
     // Section 2.3.4 Merging Requests.
-    let mesh_req: Valid<(ReqExtended, bool)> = todo!("assignment 6");
+    let mesh_req: Valid<(ReqExtended, bool)> = [mesh_req_flush, mesh_req_matmul].merge();
 
     // Section 2.3.5 Invoke a Transposer.
     let mesh_data_transposed = mesh_data.comb(transpose);
@@ -301,7 +382,19 @@ pub fn mesh_with_delays(
     let (tag, total_rows) = fifos(fifo_req, mesh_out_control);
 
     // Section 2.3.9 Return Mesh Response.
-    (tag, total_rows, mesh_out).zip_any_valid().filter_map(|(tag, total_rows, mesh_out)| todo!("assignment 6"))
+    (tag, total_rows, mesh_out).zip_any_valid().filter_map(|(tag, total_rows, mesh_out)| {
+        let mesh_tag = match tag {
+            Some(t) => t,
+            None => MeshTag::default(),
+        };
+        let total_rows = match total_rows {
+            Some(rows) => rows,
+            None => U::from(BLOCK_SIZE),
+        };
+        mesh_out.map(|(mesh_out_data, mesh_out_control)| {
+            MeshResp { total_rows, tag: mesh_tag, last: mesh_out_control.last, data: mesh_out_data }
+        })
+    })
 }
 
 /// Mesh with delays.
